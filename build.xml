@@ -1,0 +1,191 @@
+<project name="verify-demo" default="run-tests" basedir=".">
+
+    <property file="migrator.properties"/>
+
+    <!-- check required properties are set -->
+    <property name="test.build.dir" value="bin"/>
+    <property name="test.src.dir" value="src"/>
+    <!--<property name="testng.report.dir" value="test-output"/>-->
+
+    <path id="classpath">
+        <fileset dir="lib">
+            <include name="**/*.jar"/>
+        </fileset>
+		
+        <fileset dir="./../CrunchBase/lib/test/common">
+            <include name="**/*.jar"/>
+        </fileset>
+
+    </path>
+
+
+    <taskdef name="migration.new" classname="migrator.ant.NewMigrationTask" classpathref="classpath"/>
+    <taskdef name="migration.head" classname="migrator.ant.HeadMigrationTask" classpathref="classpath"/>
+    <taskdef name="migration.patch" classname="migrator.ant.PatchGenerationTask" classpathref="classpath"/>
+    <taskdef name="migration.dump" classname="migrator.ant.SQLDumpTask" classpathref="classpath"/>
+    <taskdef name="migration.reverse" classname="migrator.ant.ReverseMigrationTask" classpathref="classpath"/>
+
+    <import file="${basedir}/deploy.xml"/>
+    <target name="clean">
+        <delete dir="${test.build.dir}"/>
+        <mkdir dir="${test.build.dir}"/>
+    </target>
+
+    <target name="compile-tests" depends="clean">
+        <javac classpathref="classpath"
+               srcdir="${test.src.dir}"
+               destdir="${test.build.dir}"
+               debug="true"/>
+    </target>
+    <target name="copy.resources">
+        <copy todir="${test.build.dir}/resources">
+            <fileset dir="${test.src.dir}/resources"/>
+        </copy>
+    </target>
+    <taskdef resource="testngtasks" classpathref="classpath"/>
+
+    <path id="runpath">
+        <path refid="classpath"/>
+        <path location="config"/>
+        <pathelement location="${test.build.dir}"/>
+    </path>
+
+    <target name="functional-migrator" description="Migrates application and Db to run Functional Tests">
+
+       <!--  <copy file="${template.file}" toFile="${server.config.home}/OnlineApplication.properties" overwrite="true"/> -->
+	    <replace file="${server.config.home}/context.xml" token="crunch_base" value="${db.name}"/>
+		<replace file="${server.config.home}/environment/Crunchbase.properties" token="0 0 0/12 * * ?" value="0/4 * * * * ?"/>
+        <antcall target="migrator.upgrade"/>
+        <antcall target="seed.data"/>
+		<antcall target="import.db.dump"/>
+
+    </target>
+	
+	
+
+
+    <target name="migrator.upgrade">
+        <echo message="dburl is ${db.url}"/>
+        <echo message="dbusername is ${db.username}"/>
+        <echo message="dbpassword is ${db.password}"/>
+        <echo message="machinename is ${machine.name}"/>
+		<echo message="migration.scripts.are.in  ${migration.scripts.are.in}"/>
+        <migration.head user="${db.username}"
+                        password="${db.password}"
+                        url="${db.url}"
+                        driver="${db.driver}"
+                        scriptsLocation="${migration.scripts.are.in}"/>
+
+    </target>
+
+    <target name="import.db.dump">
+
+        <exec executable="cmd">
+            <arg value="/c"/>
+            <arg value="importDump.bat"/>
+            <arg value="${db.username}"/>
+            <arg value="${db.password}"/>
+            <arg value="${db.name}"/>
+            <arg value="${deal.dump.home}"/>
+			<arg value="${tariff.dump.home}"/>
+			<arg value="${handset.dump.home}"/>
+
+        </exec>
+
+    </target>
+
+	<target name="clean.db">
+
+        <exec executable="cmd">
+            <arg value="/c"/>
+            <arg value="cleanUpDB.bat"/>
+            <arg value="${db.username}"/>
+            <arg value="${db.password}"/>
+            <arg value="${schema.name}"/>
+            <arg value="${script.name}"/>
+		 </exec>
+
+    </target>
+
+
+    <taskdef name="dbunit" classname="org.dbunit.ant.DbUnitTask" classpathref="classpath"/>
+
+    <target name="seed.data">
+       <!--  <dbunit driver="com.mysql.jdbc.Driver" url="${db.url}" userid="${db.username}" password="${db.password}"
+                datatypeFactory="org.dbunit.ext.mysql.MySqlDataTypeFactory">
+            <classpath refid="classpath"/>
+            <operation type="CLEAN_INSERT" format="xls" src="./../CrunchBase/src/main/sql/Seed_Data.xls">
+            </operation>
+        </dbunit> -->
+    </target>
+
+
+    <target name="cruise" depends="compile-tests,copy.resources,functional-migrator">
+        <property name="group.name" value="Smoke"/>
+        <property name="testng.report.dir" value="test-output-smoke"/>
+		<property name="suite.xml" value="Smoke.xml"/>
+        <antcall target="run-groups"/>
+		
+
+    </target>
+
+    <target name="cruise-functional" depends="compile-tests,copy.resources,functional-migrator">
+        <property name="group.name" value="Regression"/>
+		<property name="suite.xml" value="Regression.xml"/>
+        <property name="testng.report.dir" value="test-output-regression"/>
+		<antcall target="run-groups"/>
+		
+    </target>
+	
+	<target name="cruise-feedparser" depends="compile-tests,copy.resources">        	
+		<property name="schema.name" value="${db.name}"/>
+		<property name="script.name" value="${deals.clean.up.script}"/>
+		<antcall target="clean.db"/>		
+		<property name="group.name" value="Feed"/>
+		<property name="suite.xml" value="Feed.xml"/>
+        <property name="testng.report.dir" value="test-output-feedparser"/>
+		<antcall target="run-groups"/>
+		
+
+    </target>
+
+
+    <target name="run-groups" depends="start.tomcat">
+        <delete dir="${testng.report.dir}" />
+		<testng 
+                classpathref="runpath"                
+                outputdir="${testng.report.dir}"
+                haltonfailure="no"
+                failureproperty="tests.failed">          
+            <xmlfileset file="${suite.xml}"/>
+			<sysproperty key="db.schema.name" value="${db.name}"/>
+           
+        </testng>
+		<antcall target="stop.tomcat"/>
+		<property name="schema.name" value="${sales.db.name}"/>
+		<property name="script.name" value="${clean.up.Script}"/>
+		<antcall target="clean.db"/>
+		<antcall target="generate.report"/>
+        <fail if="tests.failed"/>
+    </target>
+
+
+
+<target name="generate.report">	
+	
+	<delete dir="./${testng.report.dir}/html" />
+	<mkdir dir="./${testng.report.dir}/html" />
+	<xslt in="./${testng.report.dir}/testng-results.xml" style="./testng-results.xsl" out="./${testng.report.dir}/html/index.html" processor="SaxonLiaison">
+	<param name="testNgXslt.outputDir" expression="./../../${testng.report.dir}/html" />
+	<param name="testNgXslt.sortTestCaseLinks" expression="true" />
+	<param name="testNgXslt.testDetailsFilter" expression="FAIL,SKIP,PASS,BY_CLASS" />
+	<param name="testNgXslt.showRuntimeTotals" expression="true" />
+	<classpath refid="classpath" />
+	</xslt>
+
+</target>
+
+
+
+
+</project>
